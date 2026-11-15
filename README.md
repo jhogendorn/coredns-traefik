@@ -7,10 +7,12 @@
 ## Description
 
 *traefik* polls a Traefik instance's [API](https://doc.traefik.io/traefik/operations/api/)
-(`/api/http/routers`) and extracts the FQDNs from the `Host()` and `HostSNI()` matchers in each
-router's rule. For every discovered host it answers queries with either a `CNAME` pointing at the
-Traefik instance, or `A`/`AAAA` records for the Traefik instance's addresses. Records are refreshed
-periodically, so containers exposed through Traefik become resolvable without any manual DNS entries.
+(`/api/http/routers` and, unless disabled, `/api/tcp/routers`) and extracts the FQDNs from the
+`Host()` and `HostSNI()` matchers in each router's rule. ``HostSNI(`*`)`` catch-all TCP routers are
+skipped; they name no concrete host. For every discovered host it answers queries with either a
+`CNAME` pointing at the Traefik instance, or `A`/`AAAA` records for the Traefik instance's addresses.
+Records are refreshed periodically, so containers exposed through Traefik become resolvable without
+any manual DNS entries.
 
 Queries for hosts that are not currently advertised by a Traefik router are answered with NXDOMAIN,
 or passed to the next plugin when `fallthrough` is set.
@@ -27,6 +29,7 @@ traefik [ENDPOINT] {
     retention SECONDS
     insecureskipverify [BOOL]
     resolveapihost [BOOL]
+    tcprouters [BOOL]
     filter FQDN...
     fallthrough [ZONES...]
 }
@@ -55,6 +58,9 @@ traefik [ENDPOINT] {
 * `resolveapihost` **[BOOL]** when set together with `a`/`aaaa`, also answer queries for the
   **ENDPOINT** host name itself with those addresses. The argument is optional; the bare directive
   means `true`. Default `false`.
+* `tcprouters` **[BOOL]** also poll `/api/tcp/routers` and discover hosts from `HostSNI()` rules,
+  merged into the same set as HTTP-discovered hosts. The argument is optional; the bare directive
+  means `true`. Default `true`.
 * `filter` **FQDN...** only serve discovered hosts that are equal to, or a subdomain of, one of the
   given **FQDN**s; other hosts advertised by Traefik are ignored. Defaults to the server block's
   zone, so out-of-zone hosts are dropped unless you widen or narrow the filter. Each **FQDN** must

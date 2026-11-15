@@ -41,6 +41,7 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 			hostMatcher:     hostMatcher,
 			ttl:             defaultTtl,
 			refreshInterval: defaultRefreshInterval,
+			tcpRouters:      true,
 		}
 
 		defaultBaseUrl, err := url.Parse(defaultTraefikApiEndpoint)
@@ -155,6 +156,12 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 				} else {
 					cfg.resolveApiHost = true
 				}
+			case "tcprouters":
+				if c.NextArg() {
+					cfg.tcpRouters = parseBoolWithDefault(c.Val(), true)
+				} else {
+					cfg.tcpRouters = true
+				}
 			case "filter":
 				filters := c.RemainingArgs()
 				if len(filters) == 0 {
@@ -204,6 +211,7 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 		log.Infof("apiHostname ......... %v", cfg.apiHostname)
 		log.Infof("apiIp ............... %v", cfg.apiIp)
 		log.Infof("resolveApiHost ...... %v", cfg.resolveApiHost)
+		log.Infof("tcpRouters .......... %v", cfg.tcpRouters)
 		log.Infof("filter .............. %v", cfg.filter)
 	}
 

@@ -14,11 +14,13 @@ const apiTimeout = 10 * time.Second
 
 type ITraefikClient interface {
 	GetHttpRouters() (*[]HttpRouter, error)
+	GetTcpRouters() (*[]TcpRouter, error)
 }
 
 type TraefikClient struct {
 	ITraefikClient
 	httpRoutersUrl string
+	tcpRoutersUrl  string
 	config         *TraefikConfig
 	client         *http.Client
 }
@@ -29,8 +31,14 @@ func NewTraefikClient(cfg *TraefikConfig) (*TraefikClient, error) {
 		return nil, err
 	}
 
+	tcpRoutersUrl, err := url.JoinPath(cfg.baseUrl.String(), "/tcp/routers")
+	if err != nil {
+		return nil, err
+	}
+
 	client := &TraefikClient{
 		httpRoutersUrl: httpRoutersUrl,
+		tcpRoutersUrl:  tcpRoutersUrl,
 		config:         cfg,
 	}
 
@@ -47,12 +55,28 @@ func NewTraefikClient(cfg *TraefikConfig) (*TraefikClient, error) {
 }
 
 func (c *TraefikClient) GetHttpRouters() (*[]HttpRouter, error) {
-	log.Debugf("Connecting to %s", c.httpRoutersUrl)
-	response, err := c.client.Get(c.httpRoutersUrl)
+	result := &[]HttpRouter{}
+	if err := fetchRouters(c.client, c.httpRoutersUrl, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *TraefikClient) GetTcpRouters() (*[]TcpRouter, error) {
+	result := &[]TcpRouter{}
+	if err := fetchRouters(c.client, c.tcpRoutersUrl, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func fetchRouters(client *http.Client, routersUrl string, out interface{}) error {
+	log.Debugf("Connecting to %s", routersUrl)
+	response, err := client.Get(routersUrl)
 
 	if err != nil {
-		log.Errorf("Failed to fetch http routers: %q", err)
-		return nil, err
+		log.Errorf("Failed to fetch routers: %q", err)
+		return err
 	}
 
 	var body []byte
@@ -64,26 +88,23 @@ func (c *TraefikClient) GetHttpRouters() (*[]HttpRouter, error) {
 
 	if readErr != nil {
 		log.Errorf("Failed to read response body: %q", readErr)
-		return nil, readErr
+		return readErr
 	}
 
 	if response.StatusCode != 200 {
 		if body != nil {
 			bodyStr := string(body[:])
-			return nil, fmt.Errorf("Received %d response from API: %s", response.StatusCode, bodyStr)
+			return fmt.Errorf("Received %d response from API: %s", response.StatusCode, bodyStr)
 		} else {
-			return nil, fmt.Errorf("Received %d response from API", response.StatusCode)
+			return fmt.Errorf("Received %d response from API", response.StatusCode)
 		}
 	}
-
-	result := []HttpRouter{}
 
 	if body != nil {
-		err = json.Unmarshal(body, &result)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to parse json body: %q", err)
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("Failed to parse json body: %q", err)
 		}
 	}
 
-	return &result, nil
+	return nil
 }
