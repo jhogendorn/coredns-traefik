@@ -19,11 +19,13 @@ const (
 
 type ITraefikClient interface {
 	GetHttpRouters() (*[]HttpRouter, error)
+	GetTcpRouters() (*[]TcpRouter, error)
 }
 
 type TraefikClient struct {
 	ITraefikClient
 	httpRoutersUrl string
+	tcpRoutersUrl  string
 	config         *TraefikConfig
 	client         *http.Client
 }
@@ -34,8 +36,14 @@ func NewTraefikClient(cfg *TraefikConfig) (*TraefikClient, error) {
 		return nil, err
 	}
 
+	tcpRoutersUrl, err := url.JoinPath(cfg.baseUrl.String(), "/tcp/routers")
+	if err != nil {
+		return nil, err
+	}
+
 	client := &TraefikClient{
 		httpRoutersUrl: httpRoutersUrl,
+		tcpRoutersUrl:  tcpRoutersUrl,
 		config:         cfg,
 	}
 
@@ -55,6 +63,22 @@ func (c *TraefikClient) GetHttpRouters() (*[]HttpRouter, error) {
 	result := []HttpRouter{}
 	err := fetchPages(c.client, c.httpRoutersUrl, func(body []byte) error {
 		page := []HttpRouter{}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return err
+		}
+		result = append(result, page...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *TraefikClient) GetTcpRouters() (*[]TcpRouter, error) {
+	result := []TcpRouter{}
+	err := fetchPages(c.client, c.tcpRoutersUrl, func(body []byte) error {
+		page := []TcpRouter{}
 		if err := json.Unmarshal(body, &page); err != nil {
 			return err
 		}

@@ -75,3 +75,29 @@ func TestHttpRoutersPageFailure(t *testing.T) {
 		t.Errorf("expected an error when page 2 fails, got %d routers", len(*routers))
 	}
 }
+
+func TestTcpRoutersPaged(t *testing.T) {
+	srv, c := pagedServer(t, map[string][]string{"/api/tcp/routers": {"a", "b", "c"}}, "")
+	defer srv.Close()
+
+	routers, err := c.GetTcpRouters()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range *routers {
+		got = append(got, r.Name)
+	}
+	if strings.Join(got, ",") != "a,b,c" {
+		t.Errorf("routers = %v, want a,b,c", got)
+	}
+}
+
+func TestTcpRoutersPageFailure(t *testing.T) {
+	srv, c := pagedServer(t, map[string][]string{"/api/tcp/routers": {"a", "b", "c"}}, "2")
+	defer srv.Close()
+
+	if routers, err := c.GetTcpRouters(); err == nil {
+		t.Errorf("expected an error when page 2 fails, got %d routers", len(*routers))
+	}
+}

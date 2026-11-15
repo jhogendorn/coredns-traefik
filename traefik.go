@@ -49,6 +49,7 @@ type TraefikConfig struct {
 	apiHostnameIsIp    bool
 	apiIp              *net.IP
 	resolveApiHost     bool
+	tcpRouters         bool
 	// filter is the set of FQDNs (lowercase, trailing dot) a discovered host
 	// must fall under to be served. Defaults to the server block zone.
 	filter []string
@@ -195,7 +196,7 @@ func (i *traefikInstance) getEntry(host string) *TraefikConfigEntry {
 func (i *traefikInstance) refresh(first bool) error {
 	src := i.config.baseUrl
 	if first {
-		log.Infof("[%s] Checking for Traefik HTTP routers...", src)
+		log.Infof("[%s] Checking for Traefik routers...", src)
 	}
 	routers, err := i.client.GetHttpRouters()
 	if err != nil {
@@ -203,17 +204,36 @@ func (i *traefikInstance) refresh(first bool) error {
 		return err
 	}
 
+	rules := make([]string, 0, len(*routers))
+	for _, r := range *routers {
+		rules = append(rules, r.Rule)
+	}
+
+	if i.config.tcpRouters {
+		tcpRouters, err := i.client.GetTcpRouters()
+		if err != nil {
+			log.Errorf("[%s] Error retrieving Traefik TCP routers: %s", src, err)
+			return err
+		}
+		for _, r := range *tcpRouters {
+			rules = append(rules, r.Rule)
+		}
+	}
+
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
 	adds, deletes := 0, 0
 	fromTraefik := map[string]struct{}{}
-	for _, s := range *routers {
+	for _, rule := range rules {
 		//goland:noinspection ALL
-		strs := i.config.hostMatcher.FindAllStringSubmatch(s.Rule, -1)
+		strs := i.config.hostMatcher.FindAllStringSubmatch(rule, -1)
 		for _, s := range strs {
 			if len(s) == 3 {
 				host := strings.ToLower(s[2])
+				if strings.Contains(host, "*") {
+					continue
+				}
 				if !i.config.matchesFilter(host) {
 					continue
 				}

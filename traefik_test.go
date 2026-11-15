@@ -2,6 +2,7 @@ package traefik
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"regexp"
@@ -16,9 +17,20 @@ import (
 )
 
 // fakeClient returns a canned router list, standing in for a live Traefik API.
-type fakeClient struct{ routers []HttpRouter }
+type fakeClient struct {
+	routers    []HttpRouter
+	tcpRouters []TcpRouter
+	tcpErr     error
+}
 
 func (f *fakeClient) GetHttpRouters() (*[]HttpRouter, error) { return &f.routers, nil }
+
+func (f *fakeClient) GetTcpRouters() (*[]TcpRouter, error) {
+	if f.tcpErr != nil {
+		return nil, f.tcpErr
+	}
+	return &f.tcpRouters, nil
+}
 
 // TestRetention proves a discovered host keeps being served for its retention
 // window after it disappears from Traefik, is evicted once the window elapses,
@@ -223,4 +235,127 @@ func TestServeDNSKnownHostNoDataWithFallthrough(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTcpRouters(t *testing.T) {
+	baseURL, _ := url.Parse("http://traefik.example.org/api")
+	ips := []net.IP{net.ParseIP("10.0.0.2")}
+	hostMatcher := regexp.MustCompile(`Host(SNI)?\(` + "`([^`]+)`" + `\)`)
+
+	newInstance := func(fc *fakeClient) *traefikInstance {
+		return &traefikInstance{
+			config: &TraefikConfig{
+				baseUrl:     baseURL,
+				hostMatcher: hostMatcher,
+				a:           &ips,
+				ttl:         30,
+				tcpRouters:  true,
+				filter:      []string{"example.org."},
+			},
+			client:   fc,
+			mappings: make(TraefikConfigEntryMap),
+			evictAt:  make(map[string]time.Time),
+		}
+	}
+
+	t.Run("concrete HostSNI is discovered", func(t *testing.T) {
+		fc := &fakeClient{tcpRouters: []TcpRouter{{Rule: "HostSNI(`ssh.example.org`)"}}}
+		inst := newInstance(fc)
+		if err := inst.refresh(false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if inst.getEntry("ssh.example.org") == nil {
+			t.Fatal("expected ssh.example.org to be discovered from a TCP router")
+		}
+	})
+
+	t.Run("wildcard HostSNI is skipped", func(t *testing.T) {
+		fc := &fakeClient{tcpRouters: []TcpRouter{{Rule: "HostSNI(`*`)"}}}
+		inst := newInstance(fc)
+		if err := inst.refresh(false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if inst.getEntry("*") != nil {
+			t.Fatal("wildcard HostSNI must not create a record")
+		}
+		if len(inst.mappings) != 0 {
+			t.Fatalf("expected no mappings from a wildcard-only TCP router, got %d", len(inst.mappings))
+		}
+	})
+
+	t.Run("wildcard suffix HostSNI is skipped, sibling concrete host still registers", func(t *testing.T) {
+		fc := &fakeClient{tcpRouters: []TcpRouter{{Rule: "HostSNI(`*.example.org`) || HostSNI(`concrete.example.org`)"}}}
+		inst := newInstance(fc)
+		if err := inst.refresh(false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if inst.getEntry("*.example.org") != nil {
+			t.Fatal("wildcard-suffix HostSNI must not create a record")
+		}
+		if inst.getEntry("concrete.example.org") == nil {
+			t.Fatal("sibling concrete host in the same rule must still be discovered")
+		}
+		if len(inst.mappings) != 1 {
+			t.Fatalf("expected only the concrete host to be mapped, got %d", len(inst.mappings))
+		}
+	})
+
+	t.Run("multiple HostSNI values in one rule", func(t *testing.T) {
+		fc := &fakeClient{tcpRouters: []TcpRouter{{Rule: "HostSNI(`a.example.org`) || HostSNI(`b.example.org`)"}}}
+		inst := newInstance(fc)
+		if err := inst.refresh(false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if inst.getEntry("a.example.org") == nil || inst.getEntry("b.example.org") == nil {
+			t.Fatal("expected both HostSNI values to be discovered")
+		}
+	})
+
+	t.Run("host in both HTTP and TCP is not duplicated or flapped", func(t *testing.T) {
+		const host = "shared.example.org"
+		fc := &fakeClient{
+			routers:    []HttpRouter{{Rule: "Host(`" + host + "`)"}},
+			tcpRouters: []TcpRouter{{Rule: "HostSNI(`" + host + "`)"}},
+		}
+		inst := newInstance(fc)
+		if err := inst.refresh(false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(inst.mappings) != 1 {
+			t.Fatalf("expected 1 mapping for a host advertised by both HTTP and TCP, got %d", len(inst.mappings))
+		}
+
+		fc.routers = nil
+		if err := inst.refresh(false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if inst.getEntry(host) == nil {
+			t.Fatal("host still advertised via TCP must not be evicted when HTTP stops advertising it")
+		}
+	})
+
+	t.Run("TCP fetch failure aborts the refresh and preserves prior state", func(t *testing.T) {
+		fc := &fakeClient{
+			routers:    []HttpRouter{{Rule: "Host(`http.example.org`)"}},
+			tcpRouters: []TcpRouter{{Rule: "HostSNI(`tcp-only.example.org`)"}},
+		}
+		inst := newInstance(fc)
+		if err := inst.refresh(false); err != nil {
+			t.Fatalf("unexpected error on the initial refresh: %v", err)
+		}
+		if inst.getEntry("http.example.org") == nil || inst.getEntry("tcp-only.example.org") == nil {
+			t.Fatal("expected both the HTTP and TCP-only hosts to be discovered on the initial refresh")
+		}
+
+		fc.tcpErr = errors.New("tcp api unreachable")
+		if err := inst.refresh(false); err == nil {
+			t.Fatal("expected refresh to return an error when the TCP fetch fails")
+		}
+		if inst.getEntry("http.example.org") == nil {
+			t.Fatal("HTTP host must remain mapped after a refresh aborted by a TCP fetch failure")
+		}
+		if inst.getEntry("tcp-only.example.org") == nil {
+			t.Fatal("TCP-only host must remain mapped after a refresh aborted by a TCP fetch failure")
+		}
+	})
 }

@@ -142,3 +142,47 @@ func TestFilterSetup(t *testing.T) {
 		})
 	}
 }
+
+func TestTcpRoutersSetup(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{
+			name:  "defaults to true",
+			input: `traefik https://traefik.example.org/api { cname traefik.example.org }`,
+			want:  true,
+		},
+		{
+			name: "bare directive is true",
+			input: `traefik https://traefik.example.org/api {
+				cname traefik.example.org
+				tcprouters
+			}`,
+			want: true,
+		},
+		{
+			name: "explicit false disables it",
+			input: `traefik https://traefik.example.org/api {
+				cname traefik.example.org
+				tcprouters false
+			}`,
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", tc.input)
+			traefik, err := createPlugin(c)
+			if err != nil {
+				t.Fatalf("Expected no error, but got: %v", err)
+			}
+			got := traefik.Instances[0].config.tcpRouters
+			if got != tc.want {
+				t.Fatalf("tcpRouters = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
